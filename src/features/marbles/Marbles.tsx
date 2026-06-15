@@ -14,13 +14,14 @@ import { playMarble } from "../../audio/audio";
 interface Marble {
   body: RAPIER.RigidBody;
   mesh: THREE.Mesh;
-  pitch: number;
 }
 
 interface Sim {
   world: RAPIER.World;
   eventQueue: RAPIER.EventQueue;
-  marbles: Marble[];
+  // spawnMarble のクロージャと同一参照を共有する。再代入すると共有が切れて
+  // 投げ入れた玉が同期されなくなるため readonly で差し替えを禁止する（splice/push は可）。
+  readonly marbles: Marble[];
   handleToMarble: Map<number, Marble>;
   boxBody: RAPIER.RigidBody;
   handBody: RAPIER.RigidBody;
@@ -30,16 +31,12 @@ interface Sim {
   handActive: boolean;
   handTarget: THREE.Vector3;
   tiltPhase: number;
-  soundsThisFrame: number;
 }
 
 export default function Marbles() {
-  const { scene, camera, gl, size } = useThree();
+  const { scene, camera, gl } = useThree();
   const sim = useRef<Sim | null>(null); // 物理・メッシュ一式（初期化後にセット）
   const ready = useRef(false);
-  // useFrame から最新の canvas サイズを参照するための ref（リサイズに追従）。
-  const sizeRef = useRef(size);
-  sizeRef.current = size;
 
   useEffect(() => {
     let disposed = false;
@@ -148,24 +145,30 @@ export default function Marbles() {
 
       // ---- 透明な箱（ガラス）の見た目 ----
       const glassBoxMat = new THREE.MeshPhysicalMaterial({
-        color: 0xffffff,
-        roughness: 0.0,
+        color: 0xfbfeff,
+        roughness: 0.01,
         metalness: 0.0,
         transmission: 1.0,
         ior: 1.5,
-        thickness: 0.4,
+        thickness: 0.08,
         transparent: true,
+        opacity: 0.18,
+        attenuationColor: new THREE.Color(0xf2fbff),
+        attenuationDistance: 8.0,
         clearcoat: 1.0,
         clearcoatRoughness: 0.0,
-        envMapIntensity: 1.0,
+        envMapIntensity: 2.2,
         side: THREE.DoubleSide,
+        depthWrite: false,
       });
 
       const glassGroup = new THREE.Group();
-      // 箱の底（砂浜の上に乗るガラス板）。玉の接地面(y=0)より底板の上面を下げて段差を作る。
-      const BASE_TOP = -0.35;
+      const wallOuterW = (HALF_W + WALL_T) * 2;
+      const wallOuterD = (HALF_D + WALL_T) * 2;
+      // 箱の底。上面を側面の下端(y=0)に合わせ、外寸も側面まで伸ばして隙間をなくす。
+      const BASE_TOP = 0;
       const BASE_THICK = 0.4;
-      const baseGeo = new THREE.BoxGeometry(HALF_W * 2, BASE_THICK, HALF_D * 2);
+      const baseGeo = new THREE.BoxGeometry(wallOuterW, BASE_THICK, wallOuterD);
       const baseMesh = new THREE.Mesh(baseGeo, glassBoxMat);
       baseMesh.position.y = BASE_TOP - BASE_THICK / 2;
       baseMesh.receiveShadow = true;
@@ -186,8 +189,6 @@ export default function Marbles() {
         m.position.set(px, py, pz);
         glassGroup.add(m);
       };
-      const wallOuterW = (HALF_W + WALL_T) * 2;
-      const wallOuterD = (HALF_D + WALL_T) * 2;
       addGlassWall(0, WALL_H / 2, -(HALF_D + WALL_T / 2), wallOuterW, WALL_H, WALL_T);
       addGlassWall(0, WALL_H / 2, HALF_D + WALL_T / 2, wallOuterW, WALL_H, WALL_T);
       addGlassWall(-(HALF_W + WALL_T / 2), WALL_H / 2, 0, WALL_T, WALL_H, wallOuterD);
@@ -197,10 +198,102 @@ export default function Marbles() {
       // ---- ビー玉 ----
       const RADIUS = 0.5;
       const COUNT = 48;
-      const marbleColors = [0x7fb8d8, 0xd88fb0, 0x9fd8a0, 0xe0c878, 0xb89fe0, 0xe89878, 0x88d0d0];
+      const marbleColors = [0x9fdcff, 0xffb8d2, 0xb8ffc7, 0xffe68a, 0xd5c2ff, 0xffc0a6, 0xb5ffff];
 
-      const sphereGeo = new THREE.SphereGeometry(RADIUS, 24, 16);
+      const sphereGeo = new THREE.SphereGeometry(RADIUS, 40, 28);
       const marbles: Marble[] = [];
+      // collider.handle -> marble の逆引き表（衝突音のピッチ決定用）
+      const handleToMarble = new Map<number, Marble>();
+      let colorIndex = 0;
+
+      // 1個の玉を生成してワールド・シーン・配列に登録する共通関数。
+      // 初期配置（速度ゼロ）とクリック投げ入れ（初速あり）で共用する。
+      const spawnMarble = (
+        x: number,
+        y: number,
+        z: number,
+        vel?: { x: number; y: number; z: number },
+      ): Marble => {
+        const color = marbleColors[colorIndex++ % marbleColors.length];
+        const tint = new THREE.Color(color);
+        const surfaceColor = tint.clone().lerp(new THREE.Color(0xffffff), 0.55);
+        const mat = new THREE.MeshPhysicalMaterial({
+          color: surfaceColor,
+          roughness: 0.01,
+          metalness: 0.0,
+          transmission: 1.0, // 完全に光を透過 = ガラス
+          ior: 1.52,
+          thickness: 0.7,
+          transparent: true,
+          opacity: 0.82,
+          attenuationColor: tint.clone().lerp(new THREE.Color(0xffffff), 0.2), // 奥だけ淡く色づく
+          attenuationDistance: 2.1,
+          clearcoat: 1.0,
+          clearcoatRoughness: 0.0,
+          reflectivity: 0.65,
+          envMapIntensity: 2.0,
+        });
+        const mesh = new THREE.Mesh(sphereGeo, mat);
+        mesh.castShadow = true;
+        scene.add(mesh);
+
+        const body = world.createRigidBody(
+          RAPIER.RigidBodyDesc.dynamic()
+            .setTranslation(x, y, z)
+            .setLinearDamping(0.08)
+            .setCcdEnabled(true) // 高所から落ちても床を貫通(トンネリング)しない
+            .setCanSleep(false), // 傾きで常に転がるので眠らせない
+        );
+        if (vel) body.setLinvel(vel, true);
+        const col = RAPIER.ColliderDesc.ball(RADIUS)
+          .setRestitution(0.3)
+          .setFriction(0.02) // ごく低摩擦 = ガラス玉らしく滑って常に転がる
+          .setDensity(1.5)
+          .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+        world.createCollider(col, body);
+
+        const marble: Marble = { body, mesh };
+        marbles.push(marble);
+        handleToMarble.set(body.collider(0).handle, marble);
+        return marble;
+      };
+
+      const spawnMarbleAtPointer = (point: THREE.Vector3): Marble => {
+        const edge = RADIUS + 0.12;
+        const invBoxQuat = boxQuat.clone().invert();
+        const local = point.clone().applyQuaternion(invBoxQuat);
+        const safeLocal = new THREE.Vector3(
+          THREE.MathUtils.clamp(local.x, -HALF_W + edge, HALF_W - edge),
+          RADIUS + 0.12,
+          THREE.MathUtils.clamp(local.z, -HALF_D + edge, HALF_D - edge),
+        );
+
+        const minSep = RADIUS * 2 + 0.04;
+        const minSepSq = minSep * minSep;
+        const otherLocal = new THREE.Vector3();
+        for (let pass = 0; pass < marbles.length + 1; pass++) {
+          let movedUp = false;
+          for (const marble of marbles) {
+            const t = marble.body.translation();
+            otherLocal.set(t.x, t.y, t.z).applyQuaternion(invBoxQuat);
+            const dx = safeLocal.x - otherLocal.x;
+            const dz = safeLocal.z - otherLocal.z;
+            const horizontalSq = dx * dx + dz * dz;
+            if (horizontalSq >= minSepSq) continue;
+
+            const requiredY = otherLocal.y + Math.sqrt(minSepSq - horizontalSq);
+            if (safeLocal.y < requiredY) {
+              safeLocal.y = requiredY;
+              movedUp = true;
+            }
+          }
+          if (!movedUp) break;
+        }
+
+        const spawnPoint = safeLocal.applyQuaternion(boxQuat);
+
+        return spawnMarble(spawnPoint.x, spawnPoint.y, spawnPoint.z);
+      };
 
       // 床の上にグリッド配置する座標を用意（落下演出はしない）。
       const gridPositions: { x: number; z: number }[] = [];
@@ -218,47 +311,9 @@ export default function Marbles() {
       const marbleCount = Math.min(COUNT, gridPositions.length);
 
       for (let i = 0; i < marbleCount; i++) {
-        const color = marbleColors[i % marbleColors.length];
-        const mat = new THREE.MeshPhysicalMaterial({
-          color,
-          roughness: 0.0,
-          metalness: 0.0,
-          transmission: 1.0, // 完全に光を透過 = ガラス
-          ior: 1.52,
-          thickness: 1.0,
-          transparent: true,
-          attenuationColor: new THREE.Color(color), // 透過光が玉の色に染まる
-          attenuationDistance: 1.5,
-          clearcoat: 1.0,
-          clearcoatRoughness: 0.0,
-          envMapIntensity: 1.2,
-        });
-        const mesh = new THREE.Mesh(sphereGeo, mat);
-        mesh.castShadow = true;
-        scene.add(mesh);
-
         const gp = gridPositions[i];
-        const body = world.createRigidBody(
-          RAPIER.RigidBodyDesc.dynamic()
-            .setTranslation(gp.x, RADIUS, gp.z)
-            .setLinearDamping(0.08)
-            .setCanSleep(false), // 傾きで常に転がるので眠らせない
-        );
-        const col = RAPIER.ColliderDesc.ball(RADIUS)
-          .setRestitution(0.3)
-          .setFriction(0.02) // ごく低摩擦 = ガラス玉らしく滑って常に転がる
-          .setDensity(1.5)
-          .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-        world.createCollider(col, body);
-
-        marbles.push({ body, mesh, pitch: 0.8 + Math.random() * 0.5 });
+        spawnMarble(gp.x, RADIUS, gp.z);
       }
-
-      // collider.handle -> marble の逆引き表（衝突音のピッチ決定用）
-      const handleToMarble = new Map<number, Marble>();
-      marbles.forEach((m) => {
-        handleToMarble.set(m.body.collider(0).handle, m);
-      });
 
       // ---- 「手」: ポインタ位置に追従する見えない kinematic 球 ----
       const handBody = world.createRigidBody(
@@ -279,59 +334,137 @@ export default function Marbles() {
         handActive: false,
         handTarget: new THREE.Vector3(0, 0.6, 0),
         tiltPhase: 0,
-        // 衝突音スロットリング
-        soundsThisFrame: 0,
       };
 
       // ---- ポインタ -> 箱の床面(y=0.6平面)へのレイキャスト ----
       const raycaster = new THREE.Raycaster();
       const ndc = new THREE.Vector2();
-      const planeY = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.6);
+      const pointerPlane = new THREE.Plane();
+      const pointerPlaneNormal = new THREE.Vector3();
+      const pointerPlanePoint = new THREE.Vector3();
       const hit = new THREE.Vector3();
+      const localHit = new THREE.Vector3();
+      const clampedLocalHit = new THREE.Vector3();
+
+      const pointerHit = (
+        clientX: number,
+        clientY: number,
+        viewW: number,
+        viewH: number,
+      ): THREE.Vector3 | null => {
+        if (viewW <= 0 || viewH <= 0) return null;
+        ndc.x = (clientX / viewW) * 2 - 1;
+        ndc.y = -(clientY / viewH) * 2 + 1;
+        camera.updateMatrixWorld();
+        raycaster.setFromCamera(ndc, camera);
+        pointerPlaneNormal.set(0, 1, 0).applyQuaternion(boxQuat);
+        pointerPlanePoint.set(0, 0.6, 0).applyQuaternion(boxQuat);
+        pointerPlane.setFromNormalAndCoplanarPoint(pointerPlaneNormal, pointerPlanePoint);
+        if (!raycaster.ray.intersectPlane(pointerPlane, hit)) return null;
+        localHit.copy(hit).applyQuaternion(boxQuat.clone().invert());
+        const inside =
+          localHit.x >= -HALF_W - 0.3 &&
+          localHit.x <= HALF_W + 0.3 &&
+          localHit.z >= -HALF_D - 0.3 &&
+          localHit.z <= HALF_D + 0.3;
+        if (!inside) return null;
+        clampedLocalHit.set(
+          THREE.MathUtils.clamp(localHit.x, -HALF_W, HALF_W),
+          0.6,
+          THREE.MathUtils.clamp(localHit.z, -HALF_D, HALF_D),
+        );
+        return clampedLocalHit.clone().applyQuaternion(boxQuat);
+      };
 
       const pointerToWorld = (clientX: number, clientY: number): boolean => {
-        // canvas の実サイズ基準で NDC を計算（リサイズに正確に追従）。
-        const w = sizeRef.current.width;
-        const h = sizeRef.current.height;
-        ndc.x = (clientX / w) * 2 - 1;
-        ndc.y = -(clientY / h) * 2 + 1;
-        raycaster.setFromCamera(ndc, camera);
-        if (!raycaster.ray.intersectPlane(planeY, hit)) return false;
-        const inside =
-          hit.x >= -HALF_W - 0.3 &&
-          hit.x <= HALF_W + 0.3 &&
-          hit.z >= -HALF_D - 0.3 &&
-          hit.z <= HALF_D + 0.3;
-        state.handTarget.copy(hit);
-        state.handTarget.x = THREE.MathUtils.clamp(state.handTarget.x, -HALF_W, HALF_W);
-        state.handTarget.z = THREE.MathUtils.clamp(state.handTarget.z, -HALF_D, HALF_D);
-        return inside;
+        const rect = gl.domElement.getBoundingClientRect();
+        const point = pointerHit(clientX, clientY, rect.width, rect.height);
+        if (!point) return false;
+        state.handTarget.copy(point);
+        return true;
       };
 
-      const onMove = (e: PointerEvent) => {
-        // canvas を基準にした座標へ補正（canvas が全画面でない場合にも対応）。
-        const rect = gl.domElement.getBoundingClientRect();
-        const inside = pointerToWorld(e.clientX - rect.left, e.clientY - rect.top);
-        state.handActive = inside;
-        if (!inside) {
-          handBody.setNextKinematicTranslation({ x: 0, y: -10, z: 0 });
-        }
-      };
       const onLeave = () => {
         state.handActive = false;
+        handBody.setTranslation({ x: 0, y: -10, z: 0 }, true);
         handBody.setNextKinematicTranslation({ x: 0, y: -10, z: 0 });
       };
 
+      // ---- クリックでビー玉を投げ入れる ----
+      // 押した位置とほぼ同じ位置で離した「タップ」だけを投げ入れと判定し、
+      // ドラッグ（手で混ぜる）と区別する。
+      let downX = 0;
+      let downY = 0;
+      let downTime = 0;
+      let downButton = -1;
+      let downSpawnTarget: THREE.Vector3 | null = null;
+      let pointerDown = false;
+      let draggingHand = false;
+
+      const hideHand = () => {
+        state.handActive = false;
+        handBody.setTranslation({ x: 0, y: -10, z: 0 }, true);
+        handBody.setNextKinematicTranslation({ x: 0, y: -10, z: 0 });
+      };
+
+      const onDown = (e: PointerEvent) => {
+        downX = e.clientX;
+        downY = e.clientY;
+        downTime = performance.now();
+        downButton = e.button;
+        pointerDown = e.button === 0;
+        draggingHand = false;
+        hideHand();
+        const rect = gl.domElement.getBoundingClientRect();
+        downSpawnTarget = pointerHit(
+          e.clientX - rect.left,
+          e.clientY - rect.top,
+          rect.width,
+          rect.height,
+        );
+      };
+      const onUp = (e: PointerEvent) => {
+        const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+        const heldMs = performance.now() - downTime;
+        // 左ボタンで、ほとんど動かず短時間で離した = タップ。投げ入れる。
+        // （右ドラッグは視点移動なので投げ入れない。）
+        if (downSpawnTarget && downButton === 0 && moved < 12 && heldMs < 400) {
+          // 初期配置と同じ入り方にする: クリック位置の床のすぐ上に初速ゼロで置く。
+          // あとは箱の傾きで他の玉と一緒に自然に転がって馴染む。
+          // 位置は pointerdown 時点の安定したヒット位置を使う。
+          hideHand();
+          spawnMarbleAtPointer(downSpawnTarget);
+        }
+        pointerDown = false;
+        draggingHand = false;
+        downSpawnTarget = null;
+        hideHand();
+      };
+
+      const onDragMove = (e: PointerEvent) => {
+        const rect = gl.domElement.getBoundingClientRect();
+        const inside = pointerToWorld(e.clientX - rect.left, e.clientY - rect.top);
+        const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+        const heldMs = performance.now() - downTime;
+        draggingHand ||= pointerDown && downButton === 0 && (moved >= 12 || heldMs >= 400);
+        state.handActive = inside && draggingHand;
+        if (!state.handActive) {
+          handBody.setNextKinematicTranslation({ x: 0, y: -10, z: 0 });
+        }
+      };
+
       const canvas = gl.domElement;
-      canvas.addEventListener("pointermove", onMove);
+      canvas.addEventListener("pointermove", onDragMove);
       canvas.addEventListener("pointerleave", onLeave);
-      window.addEventListener("pointerup", onLeave);
+      canvas.addEventListener("pointerdown", onDown);
+      window.addEventListener("pointerup", onUp);
 
       // ---- 後始末（旧 dispose 相当。renderer.dispose は R3F が自動で行うので呼ばない）----
       cleanups.push(() => {
-        canvas.removeEventListener("pointermove", onMove);
+        canvas.removeEventListener("pointermove", onDragMove);
         canvas.removeEventListener("pointerleave", onLeave);
-        window.removeEventListener("pointerup", onLeave);
+        canvas.removeEventListener("pointerdown", onDown);
+        window.removeEventListener("pointerup", onUp);
 
         scene.remove(lights, sandMesh, glassGroup);
         marbles.forEach((m) => {
@@ -369,7 +502,7 @@ export default function Marbles() {
   // 箱メッシュを物理ごと傾けるのは整合が面倒なので、kinematic 剛体（床+壁）を回転させ、
   // 見た目のガラスも同じだけ傾けて挙動と一致させる。重力は真下のまま。
   const G_TILT = THREE.MathUtils.degToRad(9); // 最大傾き角
-  const TILT_SPEED = 0.18; // ゆっくり一周して玉を弾かない
+  const TILT_SPEED = 0.42; // 箱の自動移動を少し早めに
   const boxQuat = useRef(new THREE.Quaternion()).current;
   const boxEuler = useRef(new THREE.Euler()).current;
 
@@ -391,49 +524,50 @@ export default function Marbles() {
     if (s.handActive) {
       s.handBody.setNextKinematicTranslation({
         x: s.handTarget.x,
-        y: 0.6,
+        y: s.handTarget.y,
         z: s.handTarget.z,
       });
     }
 
     s.world.step(s.eventQueue);
 
-    // ---- 衝突音（同時に鳴りすぎ防止）----
-    const MAX_SOUNDS_PER_FRAME = 2;
-    s.soundsThisFrame = 0;
+    // ---- 衝突音 ----
+    // サンプルが短いので衝突のたびに鳴らす。鳴りすぎ抑制は audio 側の同時発音数上限に任せ、
+    // ここでは弱すぎる接触だけ無音にしてザワつきを防ぐ。
     s.eventQueue.drainCollisionEvents((h1, h2, started) => {
       if (!started) return;
-      if (s.soundsThisFrame >= MAX_SOUNDS_PER_FRAME) return;
 
       const m1 = s.handleToMarble.get(h1);
       const m2 = s.handleToMarble.get(h2);
       let speed = 0;
-      let pitch = 1.0;
       if (m1) {
         const v = m1.body.linvel();
         speed = Math.max(speed, Math.hypot(v.x, v.y, v.z));
-        pitch = m1.pitch;
       }
       if (m2) {
         const v = m2.body.linvel();
         speed = Math.max(speed, Math.hypot(v.x, v.y, v.z));
-        if (!m1) pitch = m2.pitch;
       }
       if (speed < 1.5) return; // 弱い接触は無音（ザワつき防止）
-      playMarble(Math.min(1, speed / 9), pitch);
-      s.soundsThisFrame++;
+      playMarble(Math.min(1, speed / 9));
     });
 
     // ---- 物理 -> 描画の同期 ----
-    for (const m of s.marbles) {
+    // marbles は spawnMarble のクロージャと共有している同一配列なので、再代入せず
+    // splice で in-place に詰める。再代入すると投げ入れた玉が同期対象から外れてしまう。
+    for (let i = s.marbles.length - 1; i >= 0; i--) {
+      const m = s.marbles[i];
       const t = m.body.translation();
       const r = m.body.rotation();
       m.mesh.position.set(t.x, t.y, t.z);
       m.mesh.quaternion.set(r.x, r.y, r.z, r.w);
-      // 箱から飛び出した玉は戻す（保険）
-      if (t.y < -5) {
-        m.body.setTranslation({ x: 0, y: 5, z: 0 }, true);
-        m.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      // 飛んでいった玉はそのまま（自動補充しない）。遠くまで落ちたら物理から除去。
+      if (t.y < -40) {
+        s.handleToMarble.delete(m.body.collider(0).handle);
+        s.world.removeRigidBody(m.body);
+        scene.remove(m.mesh);
+        (m.mesh.material as THREE.Material).dispose();
+        s.marbles.splice(i, 1);
       }
     }
   });

@@ -1,6 +1,6 @@
 // Web Audio API のラッパー。
-// ビー玉の衝突音は録音サンプル(public/sounds/glass-clink.mp3)を再生する。
-// 1ファイルから、音量(intensity)と再生速度(pitch)を動的に変えて多彩な衝突音を作る。
+// ビー玉の衝突音は録音サンプル(public/sounds/marble/marble_1〜5.wav)を再生する。
+// 衝突のたびに5種類からランダムに1つ選び、音量(intensity)を衝突の強さに反映する。
 // サンプルが読み込めなかった場合は合成音にフォールバックする。
 
 let ctx: AudioContext | null = null;
@@ -9,9 +9,12 @@ let master: GainNode | null = null;
 // サンプルのデコード済みバッファ。複数登録できるようにしておく。
 const buffers = new Map<string, AudioBuffer>();
 
-const SAMPLE_DEFS: Record<string, { url: string }> = {
-  marble: { url: "/sounds/glass-clink.mp3" },
-};
+// ビー玉の衝突音バリエーション（80ms 前後の短いワンショット）。
+const MARBLE_SAMPLES = ["marble_1", "marble_2", "marble_3", "marble_4", "marble_5"];
+
+const SAMPLE_DEFS: Record<string, { url: string }> = Object.fromEntries(
+  MARBLE_SAMPLES.map((name) => [name, { url: `/sounds/marble/${name}.wav` }]),
+);
 
 export function initAudio(): AudioContext {
   if (ctx) return ctx;
@@ -60,52 +63,41 @@ function preloadSamples(): Promise<unknown> {
 }
 
 // ---- 同時再生の抑制 ----
-// 鳴りすぎを防ぐため、3つの制御を入れている:
-//  1) クールダウン: 直前の発音から MIN_GAP 秒経たないと鳴らさない
-//  2) 同時発音数の上限: 今鳴っている音が MAX_VOICES を超えたら鳴らさない
-//  3) 強い衝突を優先: クールダウン中でも、直前より明らかに強い衝突は割り込んで鳴らす
-const MIN_GAP = 0.025; // 秒。連続発音の最短間隔
-const MAX_VOICES = 6; // 同時に鳴らせる音の数
-let lastPlayTime = -1;
-let lastIntensity = 0;
+// サンプルが 80ms 前後と短いので、衝突のたびに鳴らしても詰まりにくい。
+// クールダウンは設けず、同時発音数の上限だけ緩く残してクリッピングを防ぐ。
+const MAX_VOICES = 16; // 同時に鳴らせる音の数（上限のみ）
 let activeVoices = 0;
 
 /**
  * ビー玉同士・壁との衝突音。
+ * 5種類の録音サンプルからランダムに1つ選んで鳴らす。
  * @param intensity 0..1 衝突の強さ（音量に反映）
- * @param pitch     0.7..1.4 くらい。玉ごとに少し変えると自然（再生速度に反映）
  */
-export function playMarble(intensity = 0.5, pitch = 1.0): void {
+export function playMarble(intensity = 0.5): void {
   if (!ctx) return;
   const i = Math.min(1, Math.max(0.05, intensity));
-  const now = ctx.currentTime;
 
   // 同時発音数が上限なら、よほど強い衝突以外は捨てる
   if (activeVoices >= MAX_VOICES && i < 0.85) return;
 
-  // クールダウン中は、直前より明確に強い衝突だけ通す（アクセントを残す）
-  if (now - lastPlayTime < MIN_GAP && i < lastIntensity + 0.25) return;
-
-  lastPlayTime = now;
-  lastIntensity = i;
-
-  const buf = buffers.get("marble");
+  const name = MARBLE_SAMPLES[(Math.random() * MARBLE_SAMPLES.length) | 0];
+  const buf = buffers.get(name);
   if (buf) {
-    playSample(buf, i, pitch);
+    playSample(buf, i);
   } else {
-    synthMarble(i, pitch);
+    synthMarble(i);
   }
 }
 
 // ---- サンプル再生 ----
-function playSample(buf: AudioBuffer, intensity: number, pitch: number): void {
+function playSample(buf: AudioBuffer, intensity: number): void {
   const c = ctx!;
   const now = c.currentTime;
   const src = c.createBufferSource();
   src.buffer = buf;
 
-  // ピッチ違い + 微小なランダムを足して「全く同じ音」を避ける
-  src.playbackRate.value = pitch * (0.97 + Math.random() * 0.06);
+  // 微小なランダムを足して「全く同じ音」を避ける（音程は変えない）
+  src.playbackRate.value = 0.98 + Math.random() * 0.04;
 
   const gain = c.createGain();
   // 衝突の強さで音量を決める。弱い衝突は控えめに。
@@ -122,10 +114,13 @@ function playSample(buf: AudioBuffer, intensity: number, pitch: number): void {
 }
 
 // ---- フォールバック: 合成音（サンプルが無いとき）----
-function synthMarble(intensity: number, pitch: number): void {
+function synthMarble(intensity: number): void {
   const c = ctx!;
   const now = c.currentTime;
   const i = intensity;
+
+  // 玉ごとの微小なゆらぎだけ残す（音程の意図的な変更はしない）
+  const pitch = 0.97 + Math.random() * 0.06;
 
   const osc = c.createOscillator();
   const gain = c.createGain();

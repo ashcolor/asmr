@@ -20,8 +20,8 @@ export default function ScenePage() {
 
   return (
     <>
-      {/* 音声が有効化されるまではシーンを描画しない（旧仕様: tap 後に開始） */}
-      {audioReady && <SceneComponent />}
+      {/* アクセス時からシーンは見えるように描画する。音はタップ後に有効化する。 */}
+      <SceneComponent />
 
       <header id="hud">
         <button aria-label="メニューに戻る" id="back-btn" onClick={() => navigate("/")}>
