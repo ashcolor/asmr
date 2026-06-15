@@ -34,9 +34,6 @@ export default function MarblesScene() {
       <OrbitControls
         target={[0, 0, 0]}
         enablePan={false}
-        minDistance={8}
-        maxDistance={45}
-        maxPolarAngle={Math.PI / 1.8}
         mouseButtons={{
           LEFT: undefined as unknown as THREE.MOUSE,
           MIDDLE: THREE.MOUSE.DOLLY,
