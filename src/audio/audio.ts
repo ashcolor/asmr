@@ -186,7 +186,7 @@ export function loadKeySwitch(id: string): Promise<AudioBuffer[]> {
  * @param id      スイッチ識別子（red / brown / ...）
  * @param volume  0..1 音量
  */
-export function playKeySwitch(id: string, volume = 0.9): void {
+export function playKeySwitch(id: string, volume = 0.9, playbackRate = 1): void {
   if (!ctx) return;
   const bufs = switchBuffers.get(id);
   if (!bufs || bufs.length === 0) return;
@@ -200,7 +200,7 @@ export function playKeySwitch(id: string, volume = 0.9): void {
   const src = c.createBufferSource();
   src.buffer = buf;
   // ごく僅かなランダムで「全く同じ音」の連打を避ける（音程はほぼ変えない）。
-  src.playbackRate.value = 0.99 + Math.random() * 0.02;
+  src.playbackRate.value = (0.99 + Math.random() * 0.02) * playbackRate;
 
   const gain = c.createGain();
   gain.gain.value = Math.min(1, Math.max(0, volume));
@@ -211,6 +211,133 @@ export function playKeySwitch(id: string, volume = 0.9): void {
     activeVoices--;
   };
   src.start(now);
+}
+
+// ============================================================
+// 環境音（ambience）のループ再生
+// ============================================================
+// シーンごとの背景にループで流す環境音。複数トラックを同時に重ねられる
+// （例: タイピングは会話 + 物音 の 2 トラック）。
+// 1 シーンにつき 1 グループとして扱い、playAmbience でまとめて差し替える。
+
+// 環境音バッファ（url -> AudioBuffer）。デコード結果をキャッシュする。
+const ambienceBuffers = new Map<string, AudioBuffer>();
+// 環境音のロード Promise（url -> Promise）。二重 fetch を防ぐ。
+const ambienceLoadPromises = new Map<string, Promise<AudioBuffer | null>>();
+
+// 現在鳴っているトラック（source + gain）。停止時にまとめて始末する。
+interface AmbienceVoice {
+  src: AudioBufferSourceNode;
+  gain: GainNode;
+}
+let ambienceVoices: AmbienceVoice[] = [];
+// いま鳴らしているトラックの url（同じ構成なら鳴らし直さないための識別）。
+let ambienceCurrent: string[] = [];
+
+const AMBIENCE_FADE = 0.6; // フェードイン/アウト秒数
+
+function loadAmbience(url: string): Promise<AudioBuffer | null> {
+  const cached = ambienceLoadPromises.get(url);
+  if (cached) return cached;
+  if (!ctx) initAudio();
+
+  const promise = (async () => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = await res.arrayBuffer();
+      const buf = await ctx!.decodeAudioData(arr);
+      ambienceBuffers.set(url, buf);
+      return buf;
+    } catch (e) {
+      console.warn(`[audio] ambience "${url}" load failed:`, e);
+      return null;
+    }
+  })();
+
+  ambienceLoadPromises.set(url, promise);
+  return promise;
+}
+
+/**
+ * 環境音を指定の構成で鳴らす（ループ・複数トラック対応）。
+ * すでに同じ構成が鳴っていれば何もしない。違う構成なら差し替える。
+ * @param urls    重ねて鳴らすトラックの url 配列。空配列なら停止と同義。
+ * @param volume  0..1 全体の音量（各トラック共通）。
+ */
+export async function playAmbience(urls: string[], volume = 0.4): Promise<void> {
+  if (!ctx) initAudio();
+
+  // 同じ構成が既に鳴っているなら音量だけ追従させて終わり。
+  const same =
+    urls.length === ambienceCurrent.length && urls.every((u, i) => u === ambienceCurrent[i]);
+  if (same && ambienceVoices.length > 0) {
+    setAmbienceVolume(volume);
+    return;
+  }
+
+  stopAmbience();
+  ambienceCurrent = urls;
+  if (urls.length === 0) return;
+
+  const vol = Math.min(1, Math.max(0, volume));
+  const bufs = await Promise.all(urls.map((u) => loadAmbience(u)));
+
+  // ロード待ちの間に別の構成へ切り替わっていたら破棄する。
+  const stillCurrent =
+    urls.length === ambienceCurrent.length && urls.every((u, i) => u === ambienceCurrent[i]);
+  if (!stillCurrent) return;
+
+  const c = ctx!;
+  const now = c.currentTime;
+  bufs.forEach((buf) => {
+    if (!buf) return;
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = c.createGain();
+    // フェードインでプツッと始まらないようにする。
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(vol, now + AMBIENCE_FADE);
+    src.connect(gain).connect(master!);
+    src.start(now);
+    ambienceVoices.push({ src, gain });
+  });
+}
+
+/** 鳴っている環境音をフェードアウトして止める。 */
+export function stopAmbience(): void {
+  if (!ctx) {
+    ambienceVoices = [];
+    ambienceCurrent = [];
+    return;
+  }
+  const c = ctx;
+  const now = c.currentTime;
+  const voices = ambienceVoices;
+  ambienceVoices = [];
+  ambienceCurrent = [];
+  voices.forEach(({ src, gain }) => {
+    try {
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(0.0001, now + AMBIENCE_FADE);
+      src.stop(now + AMBIENCE_FADE + 0.05);
+    } catch {
+      // 既に停止済みなどは無視。
+    }
+  });
+}
+
+/** 鳴っている環境音の音量を変える（リアルタイム）。 */
+export function setAmbienceVolume(volume: number): void {
+  if (!ctx) return;
+  const vol = Math.min(1, Math.max(0, volume));
+  const now = ctx.currentTime;
+  ambienceVoices.forEach(({ gain }) => {
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.linearRampToValueAtTime(vol, now + 0.15);
+  });
 }
 
 // ---- フォールバック: 合成音（サンプルが無いとき）----

@@ -7,6 +7,9 @@ import { codeForChar } from "./keyboardLayout";
 import type { KeyDef } from "./keyboardLayout";
 import { KEY_SWITCHES, loadKeySwitch, playKeySwitch } from "../../audio/audio";
 import { randomSample } from "./sampleTexts";
+import AmbienceToggle from "../../components/AmbienceToggle";
+import { useAmbience } from "../../audio/useAmbience";
+import { TYPING_AMBIENCE } from "../../constants/ambienceDefs";
 
 // 自動打鍵の 1 文字あたりの基準間隔(ms)。人間らしくゆらぎを足す。
 // 実際の間隔はこれを速度倍率で割って決める（倍率が大きいほど速い）。
@@ -15,6 +18,7 @@ const AUTO_TYPE_BASE_MS = 140;
 // 自動打鍵の速度倍率の範囲。1=標準、小さいほどゆっくり、大きいほど速い。
 const AUTO_SPEED_MIN = 0.4;
 const AUTO_SPEED_MAX = 3;
+const SPACE_PLAYBACK_RATE = 0.88;
 
 // 設定の永続化キー（localStorage）。
 const STORAGE_KEY = "typing-settings";
@@ -39,9 +43,7 @@ export default function TypingScene() {
   // 初回マウント時に保存済み設定を読み込む。
   const [saved] = useState(loadSettings);
   // 選択中のキースイッチ（既定: 赤軸）。
-  const [switchId, setSwitchId] = useState<string>(
-    () => saved.switchId ?? KEY_SWITCHES[0].id,
-  );
+  const [switchId, setSwitchId] = useState<string>(() => saved.switchId ?? KEY_SWITCHES[0].id);
   // 音量(0..1)。
   const [volume, setVolume] = useState(() => saved.volume ?? 0.9);
   // 押下中のキー(code)。ハイライト用。
@@ -54,6 +56,8 @@ export default function TypingScene() {
   const [autoSpeed, setAutoSpeed] = useState(() => saved.autoSpeed ?? 1);
   // 上方向にスクロールされているか（上端フェードの出し分け用）。
   const [scrolled, setScrolled] = useState(false);
+  // ざわめきの環境音（会話 + 物音をループで重ねる）。音声アンロック後に自動再生。音量は保存・復元する。
+  const ambience = useAmbience(TYPING_AMBIENCE.tracks, TYPING_AMBIENCE.volume, true, "typing");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 自動打鍵のタイマーID。
@@ -91,14 +95,15 @@ export default function TypingScene() {
   }, [text]);
 
   // 打鍵音を鳴らす共通処理。
-  const hit = useCallback(() => {
-    playKeySwitch(switchIdRef.current, volumeRef.current);
+  const hit = useCallback((code?: string) => {
+    const playbackRate = code === "Space" ? SPACE_PLAYBACK_RATE : 1;
+    playKeySwitch(switchIdRef.current, volumeRef.current, playbackRate);
   }, []);
 
   // 画面キーのクリック/タップ。短くハイライトしてから消す。
   const handleKeyTap = useCallback(
     (key: KeyDef) => {
-      hit();
+      hit(key.code);
       setPressed((prev) => {
         const next = new Set(prev);
         next.add(key.code);
@@ -120,7 +125,7 @@ export default function TypingScene() {
     const onDown = (e: KeyboardEvent) => {
       // OS のキーリピートでは鳴らさない（押しっぱなしの連打音を防ぐ）。
       if (e.repeat) return;
-      hit();
+      hit(e.code);
       setPressed((prev) => {
         if (prev.has(e.code)) return prev;
         const next = new Set(prev);
@@ -166,9 +171,9 @@ export default function TypingScene() {
         return;
       }
       const ch = phrase[idx++];
-      hit();
       // 該当キーをハイライト。
       const code = codeForChar(ch);
+      hit(code);
       if (code) {
         setPressed((prev) => {
           const next = new Set(prev);
@@ -231,6 +236,25 @@ export default function TypingScene() {
             onChange={(e) => setVolume(Number(e.target.value))}
           />
         </label>
+        {/* 環境音（ざわめき）のオンオフと音量。 */}
+        <div className="flex items-center gap-3">
+          <AmbienceToggle
+            enabled={ambience.enabled}
+            onToggle={ambience.toggle}
+            label={TYPING_AMBIENCE.label}
+          />
+          <input
+            className="range range-primary range-xs w-28"
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={ambience.volume}
+            disabled={!ambience.enabled}
+            aria-label="BGM の音量"
+            onChange={(e) => ambience.setVolume(Number(e.target.value))}
+          />
+        </div>
       </div>
 
       {/* 中央の大きなキーボード */}
