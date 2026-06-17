@@ -48,10 +48,12 @@ export default function TypingScene() {
   const [pressed, setPressed] = useState<Set<string>>(() => new Set());
   // 自由入力モードのテキスト。
   const [text, setText] = useState("");
-  // 自動打鍵モードの ON/OFF。
-  const [autoTyping, setAutoTyping] = useState(false);
+  // 自動打鍵モードの ON/OFF。初期状態は自動オン。
+  const [autoTyping, setAutoTyping] = useState(true);
   // 自動打鍵の速度倍率（1=標準）。
   const [autoSpeed, setAutoSpeed] = useState(() => saved.autoSpeed ?? 1);
+  // 上方向にスクロールされているか（上端フェードの出し分け用）。
+  const [scrolled, setScrolled] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 自動打鍵のタイマーID。
@@ -82,7 +84,10 @@ export default function TypingScene() {
   // テキストが伸びたら末尾へ滑らかに自動スクロール（自動打鍵で追記し続けても追従させる）。
   useEffect(() => {
     const el = textareaRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // 末尾追従で実質スクロール状態になるので、オーバーフローしていればフェードを出す。
+    setScrolled(el.scrollHeight > el.clientHeight);
   }, [text]);
 
   // 打鍵音を鳴らす共通処理。
@@ -242,7 +247,7 @@ export default function TypingScene() {
             className={"btn btn-sm rounded-full" + (autoTyping ? " btn-primary" : " btn-neutral")}
             onClick={() => setAutoTyping((v) => !v)}
           >
-            {autoTyping ? "■ 自動打鍵を停止" : "▶ 自動打鍵モード"}
+            {autoTyping ? "■ 停止" : "▶ 自動"}
           </button>
           <label className="flex items-center gap-2 text-sm text-base-content/90">
             速度
@@ -255,14 +260,16 @@ export default function TypingScene() {
               value={autoSpeed}
               onChange={(e) => setAutoSpeed(Number(e.target.value))}
             />
-            <span className="min-w-[2.2em] text-right font-mono tabular-nums opacity-70">
-              {autoSpeed.toFixed(1)}×
-            </span>
           </label>
         </div>
         <textarea
           ref={textareaRef}
-          className="h-[clamp(80px,16vh,150px)] w-full resize-none rounded-box border-0 bg-base-100 px-5 py-4 font-mono text-2xl leading-relaxed text-base-content placeholder:text-base-content/60 focus:outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className={
+            "h-[clamp(80px,16vh,150px)] w-full resize-none rounded-box border-0 bg-base-100 px-5 py-4 font-mono text-2xl leading-relaxed text-base-content placeholder:text-base-content/60 focus:outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" +
+            // 上にスクロールされているときだけ上端をフェードアウトさせる。
+            (scrolled ? " mask-[linear-gradient(to_bottom,transparent_0,black_3rem)]" : "")
+          }
+          onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
           value={text}
           placeholder={
             autoTyping
