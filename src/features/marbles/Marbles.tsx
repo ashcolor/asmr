@@ -26,17 +26,36 @@ interface Sim {
   boxBody: RAPIER.RigidBody;
   handBody: RAPIER.RigidBody;
   glassGroup: THREE.Group;
+  sandMat: THREE.MeshStandardMaterial;
   HALF_W: number;
   HALF_D: number;
   handActive: boolean;
   handTarget: THREE.Vector3;
   tiltPhase: number;
+  // 初期玉を1個ずつ上から落とすためのキューと投入タイマー。
+  spawnQueue: { x: number; z: number }[];
+  dropY: number;
+  dropTimer: number;
+  spawnMarble: (
+    x: number,
+    y: number,
+    z: number,
+    vel?: { x: number; y: number; z: number },
+  ) => Marble;
 }
 
-export default function Marbles() {
+interface MarblesProps {
+  // 砂浜の明るさ（テクスチャ色への乗算倍率）。1=元のテクスチャそのまま。
+  sandBrightness?: number;
+}
+
+export default function Marbles({ sandBrightness = 1 }: MarblesProps) {
   const { scene, camera, gl } = useThree();
   const sim = useRef<Sim | null>(null); // 物理・メッシュ一式（初期化後にセット）
   const ready = useRef(false);
+  // 毎フレーム読む明るさ。再レンダリングせず最新値を useFrame に渡すため ref に保持。
+  const sandBrightnessRef = useRef(sandBrightness);
+  sandBrightnessRef.current = sandBrightness;
 
   useEffect(() => {
     let disposed = false;
@@ -52,29 +71,43 @@ export default function Marbles() {
       // ---- 環境マップ（ガラスの映り込み）----
       // 透明マテリアルは映り込む環境が無いと真っ黒に透けるので、RoomEnvironment で簡易的な
       // 室内の映り込みを作る。これがガラス感の決め手。
+      // sigma を 0 にしてぼかさず、鮮明な映り込み（ハイライトのコントラスト）を残す。
       const pmrem = new THREE.PMREMGenerator(gl);
-      const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.compileEquirectangularShader();
+      const envTexture = pmrem.fromScene(new RoomEnvironment(), 0).texture;
       scene.environment = envTexture;
+      // 環境光をシーン全体に薄く効かせ、ガラス越しの空気感を均一にする。
+      scene.environmentIntensity = 0.9;
 
       // ---- ライティング ----
       // 海辺の明るい昼下がり。空(水色)と砂浜(暖色)からの光で柔らかく照らす。
+      // 露出(0.85)を上げたぶん各ライトはやや控えめにし、key を主役にしてコントラストを出す。
       const lights = new THREE.Group();
-      const hemi = new THREE.HemisphereLight(0xdff0ff, 0xfff0d8, 0.7);
+      const hemi = new THREE.HemisphereLight(0xdff0ff, 0xfff0d8, 0.55);
       lights.add(hemi);
-      lights.add(new THREE.AmbientLight(0xffffff, 0.2));
-      const key = new THREE.DirectionalLight(0xfff6ea, 1.2); // 陽射し
+      lights.add(new THREE.AmbientLight(0xffffff, 0.12));
+      const key = new THREE.DirectionalLight(0xfff6ea, 1.5); // 陽射し（主光源）
       key.position.set(6, 14, 6);
       key.castShadow = true;
-      key.shadow.mapSize.set(1024, 1024);
-      key.shadow.camera.left = -10;
-      key.shadow.camera.right = 10;
-      key.shadow.camera.top = 10;
-      key.shadow.camera.bottom = -10;
-      key.shadow.bias = -0.0005;
+      // 影解像度を上げ、radius でペナンブラ(半影)を作って柔らかいリアルな影にする。
+      key.shadow.mapSize.set(2048, 2048);
+      key.shadow.camera.left = -12;
+      key.shadow.camera.right = 12;
+      key.shadow.camera.top = 12;
+      key.shadow.camera.bottom = -12;
+      key.shadow.camera.near = 1;
+      key.shadow.camera.far = 60;
+      key.shadow.bias = -0.0004;
+      key.shadow.normalBias = 0.02;
+      key.shadow.radius = 4;
       lights.add(key);
-      const fill = new THREE.DirectionalLight(0xbfe0ff, 0.35); // 空の照り返し
+      const fill = new THREE.DirectionalLight(0xbfe0ff, 0.3); // 空の照り返し
       fill.position.set(-6, 8, -4);
       lights.add(fill);
+      // 玉のハイライトを締めるリムライト（背後・低め）。輪郭にキラッと光が回る。
+      const rim = new THREE.DirectionalLight(0xffffff, 0.5);
+      rim.position.set(-4, 6, -8);
+      lights.add(rim);
       scene.add(lights);
 
       // ---- 物理ワールド ----
@@ -130,9 +163,18 @@ export default function Marbles() {
       addBoxCollider(HALF_W + WALL_T / 2, WALL_H / 2, 0, WALL_T / 2, WALL_H / 2, HALF_D + WALL_T);
 
       // ---- 砂浜（箱より広い地面）----
+      // 砂のテクスチャ(public/textures/sand.png)を繰り返しタイルで貼る。
+      // 明るさはマテリアルの color（テクスチャに乗算される倍率）で制御し、
+      // 毎フレーム brightnessRef を反映してスライダーから調整できるようにする。
       const sandGeo = new THREE.PlaneGeometry(60, 60);
+      const sandTex = new THREE.TextureLoader().load("/textures/sand.png");
+      sandTex.colorSpace = THREE.SRGBColorSpace;
+      sandTex.wrapS = THREE.RepeatWrapping;
+      sandTex.wrapT = THREE.RepeatWrapping;
+      sandTex.repeat.set(6, 6); // 60x60 を 6 回繰り返す = 1 タイル 10 単位
+      sandTex.anisotropy = gl.capabilities.getMaxAnisotropy();
       const sandMat = new THREE.MeshStandardMaterial({
-        color: 0xe3d4b3,
+        map: sandTex,
         roughness: 1.0,
         metalness: 0.0,
         envMapIntensity: 0.3,
@@ -146,18 +188,18 @@ export default function Marbles() {
       // ---- 透明な箱（ガラス）の見た目 ----
       const glassBoxMat = new THREE.MeshPhysicalMaterial({
         color: 0xfbfeff,
-        roughness: 0.01,
+        roughness: 0.0,
         metalness: 0.0,
         transmission: 1.0,
         ior: 1.5,
         thickness: 0.08,
         transparent: true,
-        opacity: 0.18,
+        opacity: 0.15,
         attenuationColor: new THREE.Color(0xf2fbff),
         attenuationDistance: 8.0,
         clearcoat: 1.0,
         clearcoatRoughness: 0.0,
-        envMapIntensity: 2.2,
+        envMapIntensity: 2.6, // 縁のエッジに光が回り、ガラスの箱らしい映り込みを強める
         side: THREE.DoubleSide,
         depthWrite: false,
       });
@@ -216,22 +258,25 @@ export default function Marbles() {
       ): Marble => {
         const color = marbleColors[colorIndex++ % marbleColors.length];
         const tint = new THREE.Color(color);
-        const surfaceColor = tint.clone().lerp(new THREE.Color(0xffffff), 0.55);
+        // 表面色は白寄せして透明感を出す。色は主に attenuation（ガラス内部の吸収）で付ける。
+        const surfaceColor = tint.clone().lerp(new THREE.Color(0xffffff), 0.65);
         const mat = new THREE.MeshPhysicalMaterial({
           color: surfaceColor,
-          roughness: 0.01,
+          roughness: 0.0, // 鏡面に近い完全な滑らかさ＝澄んだガラス
           metalness: 0.0,
           transmission: 1.0, // 完全に光を透過 = ガラス
-          ior: 1.52,
-          thickness: 0.7,
+          ior: 1.52, // クラウンガラス相当の屈折率
+          // 玉の直径ぶん厚みを持たせ、屈折・吸収がしっかり効くようにする。
+          thickness: RADIUS * 2,
           transparent: true,
-          opacity: 0.82,
-          attenuationColor: tint.clone().lerp(new THREE.Color(0xffffff), 0.2), // 奥だけ淡く色づく
-          attenuationDistance: 2.1,
-          clearcoat: 1.0,
+          opacity: 1.0, // transmission が透け感を担うので opacity は下げない（暗くならない）
+          attenuationColor: tint, // ガラス内部を通る光が色づく（奥ほど濃く）
+          attenuationDistance: 1.4, // 短いほど色が濃く出る
+          clearcoat: 1.0, // 表面にもう一層のニス膜＝強いハイライト
           clearcoatRoughness: 0.0,
-          reflectivity: 0.65,
-          envMapIntensity: 2.0,
+          dispersion: 1.2, // 色収差（プリズム的な虹色のにじみ）でガラスらしさを増す
+          reflectivity: 0.7,
+          envMapIntensity: 2.4, // 環境の映り込みを強めて立体感を出す
         });
         const mesh = new THREE.Mesh(sphereGeo, mat);
         mesh.castShadow = true;
@@ -310,10 +355,10 @@ export default function Marbles() {
       }
       const marbleCount = Math.min(COUNT, gridPositions.length);
 
-      for (let i = 0; i < marbleCount; i++) {
-        const gp = gridPositions[i];
-        spawnMarble(gp.x, RADIUS, gp.z);
-      }
+      // 初期玉は一括で置かず、useFrame から一定間隔で1個ずつ「上から落とす」。
+      // 落下位置は従来のグリッド座標を流用し、床のすぐ上ではなく高い位置から落とす。
+      const DROP_Y = WALL_H + RADIUS + 2; // 箱の縁より上から落とす
+      const spawnQueue: { x: number; z: number }[] = gridPositions.slice(0, marbleCount);
 
       // ---- 「手」: ポインタ位置に追従する見えない kinematic 球 ----
       const handBody = world.createRigidBody(
@@ -329,11 +374,16 @@ export default function Marbles() {
         boxBody,
         handBody,
         glassGroup,
+        sandMat,
         HALF_W,
         HALF_D,
         handActive: false,
         handTarget: new THREE.Vector3(0, 0.6, 0),
         tiltPhase: 0,
+        spawnQueue,
+        dropY: DROP_Y,
+        dropTimer: 0,
+        spawnMarble,
       };
 
       // ---- ポインタ -> 箱の床面(y=0.6平面)へのレイキャスト ----
@@ -477,6 +527,7 @@ export default function Marbles() {
         sphereGeo.dispose();
         sandGeo.dispose();
         sandMat.dispose();
+        sandTex.dispose();
         baseGeo.dispose();
         wallGeos.forEach((g) => g.dispose());
         glassBoxMat.dispose();
@@ -503,6 +554,7 @@ export default function Marbles() {
   // 見た目のガラスも同じだけ傾けて挙動と一致させる。重力は真下のまま。
   const G_TILT = THREE.MathUtils.degToRad(9); // 最大傾き角
   const TILT_SPEED = 0.42; // 箱の自動移動を少し早めに
+  const DROP_INTERVAL = 0.12; // 初期玉を1個ずつ落とす間隔(秒)
   const boxQuat = useRef(new THREE.Quaternion()).current;
   const boxEuler = useRef(new THREE.Euler()).current;
 
@@ -510,6 +562,10 @@ export default function Marbles() {
     if (!ready.current) return;
     const s = sim.current!;
     const dt = Math.min(0.05, delta);
+
+    // 砂浜の明るさをスライダーの最新値に追従させる（color はテクスチャへの乗算倍率）。
+    const b = sandBrightnessRef.current;
+    s.sandMat.color.setScalar(b);
 
     // 傾きをゆっくり回し続ける（手で触っていても止めない）。
     s.tiltPhase += dt * TILT_SPEED;
@@ -519,6 +575,16 @@ export default function Marbles() {
     boxQuat.setFromEuler(boxEuler);
     s.glassGroup.quaternion.copy(boxQuat);
     s.boxBody.setNextKinematicRotation(boxQuat);
+
+    // 初期玉を一定間隔で1個ずつ上から落とす。
+    if (s.spawnQueue.length > 0) {
+      s.dropTimer -= dt;
+      if (s.dropTimer <= 0) {
+        const gp = s.spawnQueue.shift()!;
+        s.spawnMarble(gp.x, s.dropY, gp.z);
+        s.dropTimer = DROP_INTERVAL;
+      }
+    }
 
     // 手の位置を物理に反映
     if (s.handActive) {
@@ -548,7 +614,7 @@ export default function Marbles() {
         const v = m2.body.linvel();
         speed = Math.max(speed, Math.hypot(v.x, v.y, v.z));
       }
-      if (speed < 1.5) return; // 弱い接触は無音（ザワつき防止）
+      if (speed < 0.2) return; // 弱い接触は無音（ザワつき防止）
       playMarble(Math.min(1, speed / 9));
     });
 
