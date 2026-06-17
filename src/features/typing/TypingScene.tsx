@@ -16,11 +16,34 @@ const AUTO_TYPE_BASE_MS = 140;
 const AUTO_SPEED_MIN = 0.4;
 const AUTO_SPEED_MAX = 3;
 
+// 設定の永続化キー（localStorage）。
+const STORAGE_KEY = "typing-settings";
+
+type StoredSettings = {
+  switchId?: string;
+  volume?: number;
+  autoSpeed?: number;
+};
+
+// localStorage から設定を読み込む（壊れていたら無視）。
+function loadSettings(): StoredSettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as StoredSettings) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function TypingScene() {
+  // 初回マウント時に保存済み設定を読み込む。
+  const [saved] = useState(loadSettings);
   // 選択中のキースイッチ（既定: 赤軸）。
-  const [switchId, setSwitchId] = useState<string>(KEY_SWITCHES[0].id);
+  const [switchId, setSwitchId] = useState<string>(
+    () => saved.switchId ?? KEY_SWITCHES[0].id,
+  );
   // 音量(0..1)。
-  const [volume, setVolume] = useState(0.9);
+  const [volume, setVolume] = useState(() => saved.volume ?? 0.9);
   // 押下中のキー(code)。ハイライト用。
   const [pressed, setPressed] = useState<Set<string>>(() => new Set());
   // 自由入力モードのテキスト。
@@ -28,7 +51,7 @@ export default function TypingScene() {
   // 自動打鍵モードの ON/OFF。
   const [autoTyping, setAutoTyping] = useState(false);
   // 自動打鍵の速度倍率（1=標準）。
-  const [autoSpeed, setAutoSpeed] = useState(1);
+  const [autoSpeed, setAutoSpeed] = useState(() => saved.autoSpeed ?? 1);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 自動打鍵のタイマーID。
@@ -46,6 +69,21 @@ export default function TypingScene() {
   useEffect(() => {
     loadKeySwitch(switchId);
   }, [switchId]);
+
+  // 設定（スイッチ・音量・速度）が変わるたび localStorage に保存。
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ switchId, volume, autoSpeed }));
+    } catch {
+      // 保存に失敗しても致命的ではないので無視。
+    }
+  }, [switchId, volume, autoSpeed]);
+
+  // テキストが伸びたら末尾へ滑らかに自動スクロール（自動打鍵で追記し続けても追従させる）。
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [text]);
 
   // 打鍵音を鳴らす共通処理。
   const hit = useCallback(() => {
@@ -107,7 +145,8 @@ export default function TypingScene() {
     if (!autoTyping) return;
 
     let cancelled = false;
-    let phrase = randomSample();
+    // 開始時に既にテキストがあれば、改行で区切ってから続ける。
+    let phrase = (textareaRef.current?.value ? "\n" : "") + randomSample();
     let idx = 0;
 
     const step = () => {
@@ -115,9 +154,9 @@ export default function TypingScene() {
       const speed = autoSpeedRef.current;
       if (idx >= phrase.length) {
         // 1 文を打ち切ったら少し間を置いて次の文へ（間も速度に追従）。
-        phrase = randomSample();
+        // テキストは消さず、改行を挟んで続けて打ち込んでいく。
+        phrase = "\n" + randomSample();
         idx = 0;
-        setText("");
         autoTimerRef.current = window.setTimeout(step, 700 / speed);
         return;
       }
@@ -157,8 +196,6 @@ export default function TypingScene() {
     };
   }, [autoTyping, hit]);
 
-  const selected = KEY_SWITCHES.find((s) => s.id === switchId);
-
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-[clamp(1rem,3vh,2rem)] bg-base-100 px-6 pb-8 pt-20 text-base-content">
       {/* スイッチ選択・音量・モード切替パネル */}
@@ -177,19 +214,29 @@ export default function TypingScene() {
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-2 text-sm text-base-content/90">
+          音量
+          <input
+            className="range range-primary range-xs w-28"
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+          />
+        </label>
+      </div>
+
+      {/* 中央の大きなキーボード */}
+      <div className="flex w-full max-w-5xl justify-center">
+        <Keyboard pressed={pressed} onKeyTap={handleKeyTap} />
+      </div>
+
+      {/* キーボードの下のサンプルテキスト/入力欄 */}
+      <div className="flex w-full max-w-3xl flex-col gap-3">
+        {/* 自動打鍵モードの切替・速度設定（テキスト欄の上） */}
         <div className="flex flex-wrap items-center justify-center gap-5">
-          <label className="flex items-center gap-2 text-sm text-base-content/90">
-            音量
-            <input
-              className="range range-primary range-xs w-28"
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={volume}
-              onChange={(e) => setVolume(Number(e.target.value))}
-            />
-          </label>
           <button
             type="button"
             className={"btn btn-sm rounded-full" + (autoTyping ? " btn-primary" : " btn-neutral")}
@@ -213,32 +260,24 @@ export default function TypingScene() {
             </span>
           </label>
         </div>
-      </div>
-
-      {/* 中央の大きなキーボード */}
-      <div className="flex w-full max-w-5xl justify-center">
-        <Keyboard pressed={pressed} onKeyTap={handleKeyTap} />
-      </div>
-
-      {/* キーボードの下のサンプルテキスト/入力欄 */}
-      <div className="flex w-full max-w-3xl flex-col gap-2">
         <textarea
           ref={textareaRef}
-          className="textarea textarea-bordered h-[clamp(80px,16vh,150px)] w-full resize-none bg-base-200 px-5 py-4 font-mono text-base leading-relaxed text-base-content placeholder:text-base-content/60 focus:border-primary"
+          className="h-[clamp(80px,16vh,150px)] w-full resize-none rounded-box border-0 bg-base-100 px-5 py-4 font-mono text-2xl leading-relaxed text-base-content placeholder:text-base-content/60 focus:outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           value={text}
           placeholder={
             autoTyping
-              ? "自動打鍵モード実行中…"
+              ? "自動打鍵モード実行中…（クリックで停止）"
               : "ここに自由にタイプして打鍵音を楽しもう（物理キーボード・画面クリックどちらもOK）"
           }
           readOnly={autoTyping}
+          // 自動打鍵中にテキスト欄をクリックしたら停止して手入力に戻れるようにする。
+          onMouseDown={() => {
+            if (autoTyping) setAutoTyping(false);
+          }}
           onChange={(e) => setText(e.target.value)}
           spellCheck={false}
           autoFocus
         />
-        <div className="text-right text-xs text-base-content/70">
-          {selected ? `${selected.japanese}（${selected.english}）` : ""}
-        </div>
       </div>
     </div>
   );
