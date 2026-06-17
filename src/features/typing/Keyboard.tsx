@@ -12,15 +12,18 @@ interface KeyboardProps {
 
 export default function Keyboard({ pressed, onKeyTap }: KeyboardProps) {
   return (
-    <div className="kb" aria-hidden>
+    <div
+      className="flex w-full select-none flex-col gap-1 rounded-box bg-base-200 p-3 shadow-xl sm:gap-2 sm:p-4"
+      aria-hidden
+    >
       {KEYBOARD_LAYOUT.map((row, ri) => (
-        <div className="kb__row" key={ri}>
+        <div className="flex gap-1 sm:gap-2" key={ri}>
           {row.map((key) => {
             const isPressed = pressed.has(key.code);
             const cls =
-              "kb__key" +
-              (key.flex ? " kb__key--flex" : "") +
-              (isPressed ? " kb__key--active" : "");
+              "btn min-h-0 min-w-0 flex-1 basis-0 flex-col gap-0 px-1 text-xs font-normal sm:h-14 sm:text-sm" +
+              (key.flex ? " flex-[8]" : " h-11") +
+              (isPressed ? " btn-primary" : " btn-neutral");
             return (
               <button
                 type="button"
@@ -36,11 +39,13 @@ export default function Keyboard({ pressed, onKeyTap }: KeyboardProps) {
               >
                 {key.shiftLabel ? (
                   <>
-                    <span className="kb__key-shift">{key.shiftLabel}</span>
-                    <span className="kb__key-main">{key.label}</span>
+                    <span className="text-[0.7em] leading-none text-neutral-content/70">
+                      {key.shiftLabel}
+                    </span>
+                    <span className="leading-none">{key.label}</span>
                   </>
                 ) : (
-                  <span className="kb__key-main">{key.label}</span>
+                  <span className="leading-none">{key.label}</span>
                 )}
               </button>
             );

@@ -15,6 +15,7 @@ export default function MarblesScene() {
     <>
       <Canvas
         id="scene"
+        className="absolute inset-0 h-full w-full touch-none"
         // ソフトシャドウ(PCFSoft)で影の縁を柔らかくし、リアルな陰影にする。
         shadows={{ type: THREE.PCFSoftShadowMap }}
         dpr={[1, 2]}
@@ -51,13 +52,19 @@ export default function MarblesScene() {
       </Canvas>
 
       {/* 砂浜の明るさ調整パネル（画面左下）。 */}
-      <div className="sand-control">
-        <label className="sand-control__label" htmlFor="sand-brightness">
+      <div className="absolute bottom-5 left-5 z-10 flex w-52 flex-col gap-2 rounded-box border border-base-300 bg-base-200 p-4 text-base-content shadow-xl">
+        <label
+          className="flex items-center justify-between text-sm tracking-[0.05em]"
+          htmlFor="sand-brightness"
+        >
           砂浜の明るさ
-          <span className="sand-control__value">{sandBrightness.toFixed(2)}</span>
+          <span className="font-mono tabular-nums text-base-content/70">
+            {sandBrightness.toFixed(2)}
+          </span>
         </label>
         <input
           id="sand-brightness"
+          className="range range-primary range-xs w-full"
           type="range"
           min={0.1}
           max={1.5}

@@ -23,11 +23,22 @@ export default function ScenePage() {
       {/* アクセス時からシーンは見えるように描画する。音はタップ後に有効化する。 */}
       <SceneComponent />
 
-      <header id="hud">
-        <button aria-label="メニューに戻る" id="back-btn" onClick={() => navigate("/")}>
+      <header
+        id="hud"
+        className="absolute inset-x-0 top-0 z-10 flex items-center gap-4 p-4 sm:px-5"
+      >
+        <button
+          aria-label="メニューに戻る"
+          id="back-btn"
+          type="button"
+          className="btn btn-neutral btn-sm min-w-fit rounded-full px-4 whitespace-nowrap shadow"
+          onClick={() => navigate("/")}
+        >
           ← もどる
         </button>
-        <span id="scene-name">{def.label}</span>
+        <span id="scene-name" className="badge badge-neutral text-sm tracking-[0.1em]">
+          {def.label}
+        </span>
       </header>
 
       {!audioReady && <TapToStart onTap={unlock} />}

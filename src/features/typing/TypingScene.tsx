@@ -160,25 +160,28 @@ export default function TypingScene() {
   const selected = KEY_SWITCHES.find((s) => s.id === switchId);
 
   return (
-    <div className="typing">
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-[clamp(1rem,3vh,2rem)] bg-base-100 px-6 pb-8 pt-20 text-base-content">
       {/* スイッチ選択・音量・モード切替パネル */}
-      <div className="typing__panel">
-        <div className="typing__switches">
+      <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-4">
+        <div className="flex flex-wrap justify-center gap-2">
           {KEY_SWITCHES.map((sw) => (
             <button
               type="button"
               key={sw.id}
-              className={"typing__switch" + (sw.id === switchId ? " typing__switch--active" : "")}
+              className={
+                "btn btn-sm rounded-full" + (sw.id === switchId ? " btn-primary" : " btn-neutral")
+              }
               onClick={() => setSwitchId(sw.id)}
             >
               {sw.japanese}
             </button>
           ))}
         </div>
-        <div className="typing__controls">
-          <label className="typing__volume">
+        <div className="flex flex-wrap items-center justify-center gap-5">
+          <label className="flex items-center gap-2 text-sm text-base-content/90">
             音量
             <input
+              className="range range-primary range-xs w-28"
               type="range"
               min={0}
               max={1}
@@ -189,14 +192,15 @@ export default function TypingScene() {
           </label>
           <button
             type="button"
-            className={"typing__auto" + (autoTyping ? " typing__auto--on" : "")}
+            className={"btn btn-sm rounded-full" + (autoTyping ? " btn-primary" : " btn-neutral")}
             onClick={() => setAutoTyping((v) => !v)}
           >
             {autoTyping ? "■ 自動打鍵を停止" : "▶ 自動打鍵モード"}
           </button>
-          <label className="typing__speed">
+          <label className="flex items-center gap-2 text-sm text-base-content/90">
             速度
             <input
+              className="range range-primary range-xs w-28"
               type="range"
               min={AUTO_SPEED_MIN}
               max={AUTO_SPEED_MAX}
@@ -204,21 +208,23 @@ export default function TypingScene() {
               value={autoSpeed}
               onChange={(e) => setAutoSpeed(Number(e.target.value))}
             />
-            <span className="typing__speed-value">{autoSpeed.toFixed(1)}×</span>
+            <span className="min-w-[2.2em] text-right font-mono tabular-nums opacity-70">
+              {autoSpeed.toFixed(1)}×
+            </span>
           </label>
         </div>
       </div>
 
       {/* 中央の大きなキーボード */}
-      <div className="typing__keyboard-wrap">
+      <div className="flex w-full max-w-5xl justify-center">
         <Keyboard pressed={pressed} onKeyTap={handleKeyTap} />
       </div>
 
       {/* キーボードの下のサンプルテキスト/入力欄 */}
-      <div className="typing__text-wrap">
+      <div className="flex w-full max-w-3xl flex-col gap-2">
         <textarea
           ref={textareaRef}
-          className="typing__textarea"
+          className="textarea textarea-bordered h-[clamp(80px,16vh,150px)] w-full resize-none bg-base-200 px-5 py-4 font-mono text-base leading-relaxed text-base-content placeholder:text-base-content/60 focus:border-primary"
           value={text}
           placeholder={
             autoTyping
@@ -230,7 +236,7 @@ export default function TypingScene() {
           spellCheck={false}
           autoFocus
         />
-        <div className="typing__hint">
+        <div className="text-right text-xs text-base-content/70">
           {selected ? `${selected.japanese}（${selected.english}）` : ""}
         </div>
       </div>
