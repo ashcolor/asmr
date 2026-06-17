@@ -113,6 +113,106 @@ function playSample(buf: AudioBuffer, intensity: number): void {
   src.start(now);
 }
 
+// ============================================================
+// キーボードタイピング ASMR 用のキースイッチ音
+// ============================================================
+// 音源は key-switch-tester (https://github.com/ashcolor/key-switch-tester) と
+// 同じ GCS 上の mp3 を使う。スイッチ種類ごとに 3 サンプルあり、打鍵のたびに
+// ランダムで 1 つ選んで鳴らす。CORS は許可済み(*)なので fetch→decode で乗せられる。
+
+const SWITCH_SOUND_BASE = "https://storage.googleapis.com/key-switch-tester/sound/v2";
+
+export interface KeySwitchDef {
+  id: string; // 内部識別子 / URL のファイル名プレフィックス
+  japanese: string;
+  english: string;
+  samples: number; // サンプル数（{id}{0..samples-1}.mp3）
+}
+
+// 選択肢として出すキースイッチ一覧。key-switch-tester の constants.ts に準拠。
+export const KEY_SWITCHES: KeySwitchDef[] = [
+  { id: "red", japanese: "赤軸", english: "Red (Linear)", samples: 3 },
+  { id: "brown", japanese: "茶軸", english: "Brown (Tactile)", samples: 3 },
+  { id: "blue", japanese: "青軸", english: "Blue (Clicky)", samples: 3 },
+  { id: "topre", japanese: "東プレ", english: "Topre", samples: 3 },
+  { id: "mac", japanese: "MacBook", english: "MacBook", samples: 3 },
+];
+
+// スイッチごとのデコード済みバッファ。id -> AudioBuffer[]。
+const switchBuffers = new Map<string, AudioBuffer[]>();
+// スイッチごとのロード Promise。同じスイッチを二重に取りにいかないためのキャッシュ。
+const switchLoadPromises = new Map<string, Promise<AudioBuffer[]>>();
+
+/**
+ * 指定スイッチのサンプル群を読み込む（キャッシュ付き）。
+ * 失敗したサンプルは黙ってスキップし、読めたものだけ返す。
+ */
+export function loadKeySwitch(id: string): Promise<AudioBuffer[]> {
+  const cached = switchLoadPromises.get(id);
+  if (cached) return cached;
+
+  const def = KEY_SWITCHES.find((s) => s.id === id);
+  if (!def) {
+    return Promise.resolve([]);
+  }
+  if (!ctx) initAudio();
+
+  const promise = Promise.all(
+    Array.from({ length: def.samples }, async (_, i) => {
+      const url = `${SWITCH_SOUND_BASE}/${id}${i}.mp3`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const arr = await res.arrayBuffer();
+        return await ctx!.decodeAudioData(arr);
+      } catch (e) {
+        console.warn(`[audio] key switch sample "${id}${i}" load failed:`, e);
+        return null;
+      }
+    }),
+  ).then((bufs) => {
+    const ok = bufs.filter((b): b is AudioBuffer => b != null);
+    switchBuffers.set(id, ok);
+    return ok;
+  });
+
+  switchLoadPromises.set(id, promise);
+  return promise;
+}
+
+/**
+ * キースイッチの打鍵音を 1 回鳴らす。
+ * 指定スイッチのサンプルからランダムに 1 つ選ぶ。未ロードなら何も鳴らない（無音）。
+ * @param id      スイッチ識別子（red / brown / ...）
+ * @param volume  0..1 音量
+ */
+export function playKeySwitch(id: string, volume = 0.9): void {
+  if (!ctx) return;
+  const bufs = switchBuffers.get(id);
+  if (!bufs || bufs.length === 0) return;
+
+  // 同時発音数の上限はビー玉と共有。連打でも詰まりにくいよう緩めに。
+  if (activeVoices >= MAX_VOICES) return;
+
+  const buf = bufs[(Math.random() * bufs.length) | 0];
+  const c = ctx;
+  const now = c.currentTime;
+  const src = c.createBufferSource();
+  src.buffer = buf;
+  // ごく僅かなランダムで「全く同じ音」の連打を避ける（音程はほぼ変えない）。
+  src.playbackRate.value = 0.99 + Math.random() * 0.02;
+
+  const gain = c.createGain();
+  gain.gain.value = Math.min(1, Math.max(0, volume));
+  src.connect(gain).connect(master!);
+
+  activeVoices++;
+  src.onended = () => {
+    activeVoices--;
+  };
+  src.start(now);
+}
+
 // ---- フォールバック: 合成音（サンプルが無いとき）----
 function synthMarble(intensity: number): void {
   const c = ctx!;

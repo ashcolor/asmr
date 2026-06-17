@@ -2,6 +2,7 @@
 // name はルーティング用（/marbles など）。component は ScenePage が描画する R3F シーン。
 import type { ComponentType } from "react";
 import MarblesScene from "../features/marbles/MarblesScene";
+import TypingScene from "../features/typing/TypingScene";
 
 export interface SceneDef {
   name: string;
@@ -14,7 +15,7 @@ export interface SceneDef {
 export const sceneDefs: SceneDef[] = [
   { name: "marbles", emoji: "🔮", label: "ビー玉の箱", enabled: true, component: MarblesScene },
   { name: "nature", emoji: "🌿", label: "森と海", enabled: false },
-  { name: "typing", emoji: "⌨️", label: "タイピング", enabled: false },
+  { name: "typing", emoji: "⌨️", label: "タイピング", enabled: true, component: TypingScene },
   { name: "squeeze", emoji: "🫧", label: "スクイーズ", enabled: false },
 ];
 
